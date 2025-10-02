@@ -1,0 +1,36 @@
+#!/usr/bin/expect -f
+set timeout -1
+
+# This expect script automates the 'amplify add api' and 'amplify add storage' flows
+# It assumes the Amplify project is initialized (amplify init) and will answer
+# prompts with the recommended choices from the scaffold.
+
+spawn amplify add api
+expect {
+  -re "\(Use arrow keys to move, Enter to select\)" {send "\r"; exp_continue}
+  "Please select from one of the below mentioned services:" {send "REST\r"; exp_continue}
+  "Provide a name for the API" {send "SpatialMeshAPI\r"; exp_continue}
+  "Path:" {send "/spatial/{proxy+}\r"; exp_continue}
+  "Restrict API access" {send "No\r"; exp_continue}
+  "Do you want to add another path" {send "No\r"; exp_continue}
+  "Do you want to edit the local lambda function now" {send "No\r"; exp_continue}
+  eof
+}
+
+spawn amplify add storage
+expect {
+  "Please select a service" {send "NoSQL\r"; exp_continue}
+  "Provide a friendly name for your resource that will be used to label this category in the Amplify project" {send "SpatialAnchorsTable\r"; exp_continue}
+  "Provide table name" {send "SpatialAnchors\r"; exp_continue}
+  "Partition key" {send "anchorId\r"; exp_continue}
+  "Sort key" {send "\r"; exp_continue}
+  "Do you want to add a sort key" {send "No\r"; exp_continue}
+  "Do you want to add a global secondary index" {send "Yes\r"; exp_continue}
+  "Index name" {send "UserIdIndex\r"; exp_continue}
+  "Partition key for GSI" {send "userId\r"; exp_continue}
+  "Do you want to add another global secondary index" {send "No\r"; exp_continue}
+  "Do you want to add a Lambda trigger for your table" {send "No\r"; exp_continue}
+  eof
+}
+
+puts "Expect script finished successfully"

@@ -1,39 +1,66 @@
 import 'package:json_annotation/json_annotation.dart';
+import 'package:decimal/decimal.dart';
 
 part 'user_earnings.g.dart';
 
 @JsonSerializable()
 class UserEarnings {
+  @JsonKey(required: true)
   final String userId;
-  final double totalEarnings;
-  final double totalPaid;
-  final double pendingEarnings;
-  final Map<String, double> earningsByType;
+  
+  @DecimalConverter()
+  @JsonKey(required: true)
+  final Decimal totalEarnings;
+  
+  @DecimalConverter()
+  @JsonKey(required: true)
+  final Decimal availableBalance;
+  
+  @DecimalConverter()
+  @JsonKey(required: true)
+  final Decimal pendingBalance;
+  
+  @DecimalConverter()
+  @JsonKey(required: true)
+  final Decimal lifetimeWithdrawals;
+  
+  @JsonKey(defaultValue: const {})
+  final Map<String, Decimal> earningsByType;
+  
+  @JsonKey(defaultValue: const [])
   final List<EarningTransaction> recentTransactions;
+  
   final DateTime lastUpdated;
+  
+  @JsonKey(defaultValue: 0)
   final int contributionCount;
+  
+  @JsonKey(defaultValue: 0.0)
   final double averageQualityScore;
+  
+  @JsonKey(defaultValue: const {})
   final Map<String, int> contributionsByType;
   
   UserEarnings({
     required this.userId,
     required this.totalEarnings,
-    required this.totalPaid,
-    required this.pendingEarnings,
-    required this.earningsByType,
-    required this.recentTransactions,
-    required this.lastUpdated,
-    required this.contributionCount,
-    required this.averageQualityScore,
-    required this.contributionsByType,
-  });
+    required this.availableBalance,
+    required this.pendingBalance,
+    required this.lifetimeWithdrawals,
+    this.earningsByType = const {},
+    this.recentTransactions = const [],
+    DateTime? lastUpdated,
+    this.contributionCount = 0,
+    this.averageQualityScore = 0.0,
+    this.contributionsByType = const {},
+  }) : this.lastUpdated = lastUpdated ?? DateTime.now();
   
   factory UserEarnings.fromJson(Map<String, dynamic> json) => _$UserEarningsFromJson(json);
   
   Map<String, dynamic> toJson() => _$UserEarningsToJson(this);
   
   // Calculated properties
-  double get dailyEarnings {
+  Decimal get dailyEarnings {
     final today = DateTime.now();
     final todayTransactions = recentTransactions.where((tx) => 
         tx.timestamp.day == today.day &&
@@ -41,21 +68,39 @@ class UserEarnings {
         tx.timestamp.year == today.year
     );
     
-    return todayTransactions.fold(0.0, (sum, tx) => sum + tx.amount);
+    return todayTransactions.fold(
+      Decimal.zero,
+      (sum, tx) => sum + tx.amount,
+    );
   }
   
-  double get weeklyEarnings {
+  Decimal get weeklyEarnings {
     final weekAgo = DateTime.now().subtract(const Duration(days: 7));
     final weekTransactions = recentTransactions.where((tx) => tx.timestamp.isAfter(weekAgo));
     
-    return weekTransactions.fold(0.0, (sum, tx) => sum + tx.amount);
+    return weekTransactions.fold(
+      Decimal.zero,
+      (sum, tx) => sum + tx.amount,
+    );
   }
   
-  double get monthlyEarnings {
+  Decimal get monthlyEarnings {
     final monthAgo = DateTime.now().subtract(const Duration(days: 30));
     final monthTransactions = recentTransactions.where((tx) => tx.timestamp.isAfter(monthAgo));
     
-    return monthTransactions.fold(0.0, (sum, tx) => sum + tx.amount);
+    return monthTransactions.fold(
+      Decimal.zero,
+      (sum, tx) => sum + tx.amount,
+    );
+  }
+  
+  Decimal get totalPendingWithdrawals {
+    return recentTransactions
+        .where((tx) => tx.status == 'pending' && tx.type == 'withdrawal')
+        .fold(
+          Decimal.zero,
+          (sum, tx) => sum + tx.amount,
+        );
   }
   
   String get topEarningType {
@@ -68,10 +113,11 @@ class UserEarnings {
   
   UserEarnings copyWith({
     String? userId,
-    double? totalEarnings,
-    double? totalPaid,
-    double? pendingEarnings,
-    Map<String, double>? earningsByType,
+    Decimal? totalEarnings,
+    Decimal? availableBalance,
+    Decimal? pendingBalance,
+    Decimal? lifetimeWithdrawals,
+    Map<String, Decimal>? earningsByType,
     List<EarningTransaction>? recentTransactions,
     DateTime? lastUpdated,
     int? contributionCount,
@@ -81,8 +127,9 @@ class UserEarnings {
     return UserEarnings(
       userId: userId ?? this.userId,
       totalEarnings: totalEarnings ?? this.totalEarnings,
-      totalPaid: totalPaid ?? this.totalPaid,
-      pendingEarnings: pendingEarnings ?? this.pendingEarnings,
+      availableBalance: availableBalance ?? this.availableBalance,
+      pendingBalance: pendingBalance ?? this.pendingBalance,
+      lifetimeWithdrawals: lifetimeWithdrawals ?? this.lifetimeWithdrawals,
       earningsByType: earningsByType ?? this.earningsByType,
       recentTransactions: recentTransactions ?? this.recentTransactions,
       lastUpdated: lastUpdated ?? this.lastUpdated,
@@ -94,16 +141,37 @@ class UserEarnings {
 }
 
 @JsonSerializable()
+@JsonSerializable()
 class EarningTransaction {
+  @JsonKey(required: true)
   final String id;
+  
+  @JsonKey(required: true)
   final String userId;
-  final double amount;
+  
+  @DecimalConverter()
+  @JsonKey(required: true)
+  final Decimal amount;
+  
+  @JsonKey(required: true)
   final String type;
+  
+  @JsonKey(required: true)
   final String contributionId;
+  
+  @JsonKey(required: true)
   final DateTime timestamp;
+  
+  @JsonKey(required: true)
   final String status;
+  
   final String? transactionHash;
-  final String paymentMethod;
+  
+  @PaymentTypeConverter()
+  @JsonKey(required: true)
+  final PaymentType paymentMethod;
+  
+  @JsonKey(defaultValue: const {})
   final Map<String, dynamic> metadata;
   
   EarningTransaction({

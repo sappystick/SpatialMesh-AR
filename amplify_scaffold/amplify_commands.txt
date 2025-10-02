@@ -1,0 +1,61 @@
+# Amplify CLI commands to create backend for SpatialMesh-AR
+
+cd <project-root>
+
+# 1) Initialize Amplify (choose spacialmesh-admin profile)
+amplify init
+# Suggested answers during prompts:
+#   Project name: SpatialMeshAR
+#   Environment: dev
+#   Default editor: (your editor)
+#   App type: javascript
+#   JS framework: none
+#   Source directory path: lib
+#   Distribution dir path: build
+#   Build command: flutter pub get; flutter build apk
+#   Start command: flutter run
+#   Use AWS profile: Yes
+#   Choose profile: spacialmesh-admin
+
+# 2) Add Auth (optional but recommended)
+amplify add auth
+# Accept defaults or customize
+
+# 3) Add REST API + Lambda functions
+amplify add api
+# Choose: REST
+# Provide name: SpatialMeshAPI
+# Path: /spatial
+# Lambda source: Create a new Lambda function
+# Lambda name: createSpatial
+# Runtime: NodeJS
+# Advanced settings: No
+
+# Repeat amplify add api for additional routes or edit the created API to add more paths
+# Add GET /spatial/{userId} -> function: getSpatial
+amplify add api
+# Path: /spatial/{userId}
+# Lambda name: getSpatial
+# Runtime: NodeJS
+
+# Add GET /earnings/{userId} -> function: getEarnings
+amplify add api
+# Path: /earnings/{userId}
+# Lambda name: getEarnings
+# Runtime: NodeJS
+
+# Add PUT /earnings -> function: putEarnings
+amplify add api
+# Path: /earnings
+# Lambda name: putEarnings
+# Runtime: NodeJS
+
+# 4) Add S3 storage for AR models
+amplify add storage
+# Choose: Content (Images, audio, video, etc.)
+# Provide bucket name and access levels
+
+# 5) Push backend
+amplify push
+
+# After push, Amplify will create the 'amplify/' folder and generate the platform config (amplifyconfiguration.dart). Replace the placeholder file in lib/ with the generated one.

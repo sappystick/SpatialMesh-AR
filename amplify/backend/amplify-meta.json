@@ -1,0 +1,16 @@
+{
+  "providers": {
+    "awscloudformation": {
+      "AuthRoleName": "amplify-spacialmesh-dev-1ac3a-authRole",
+      "UnauthRoleArn": "arn:aws:iam::135334155696:role/amplify-spacialmesh-dev-1ac3a-unauthRole",
+      "AuthRoleArn": "arn:aws:iam::135334155696:role/amplify-spacialmesh-dev-1ac3a-authRole",
+      "Region": "us-east-2",
+      "DeploymentBucketName": "amplify-spacialmesh-dev-1ac3a-deployment",
+      "UnauthRoleName": "amplify-spacialmesh-dev-1ac3a-unauthRole",
+      "StackName": "amplify-spacialmesh-dev-1ac3a",
+      "StackId": "arn:aws:cloudformation:us-east-2:135334155696:stack/amplify-spacialmesh-dev-1ac3a/6bbb53d0-9f0f-11f0-9d55-0aa8c06f57cb",
+      "AmplifyAppId": "dmvhv00sr2jv9"
+    }
+  },
+  "auth": {}
+}
