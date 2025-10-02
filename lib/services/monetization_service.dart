@@ -1,7 +1,7 @@
 import 'package:injectable/injectable.dart';
-import 'package:web3dart/web3dart.dart';
-import 'package:bitcoin_flutter/bitcoin_flutter.dart';
-import 'dart:convert';
+import 'package:decimal/decimal.dart';
+import 'package:uuid/uuid.dart';
+import 'dart:async';
 
 import '../core/app_config.dart';
 import '../models/spatial_anchor.dart';
@@ -9,35 +9,45 @@ import '../models/user_earnings.dart';
 import 'aws_service.dart';
 import 'analytics_service.dart';
 import '../core/service_locator.dart';
+import 'blockchain/blockchain_manager.dart';
+import 'lightning/lightning_manager.dart';
 
 @singleton
 class MonetizationService {
-  late Web3Client _web3Client;
-  final Map<String, EarningsTracker> _userEarnings = {};
-  final Map<String, double> _pendingPayouts = {};
+  static const BLOCKCHAIN_THRESHOLD = Decimal.parse('0.1');  // 0.1 ETH
+  static const MIN_WITHDRAWAL = Decimal.parse('0.01');  // 0.01 ETH/BTC
+
+  late final BlockchainManager _blockchainManager;
+  late final LightningManager _lightningManager;
   
-  // Lightning Network integration
-  LightningNetworkClient? _lightningClient;
+  final Map<String, UserEarnings> _userEarnings = {};
+  final Map<String, Decimal> _pendingPayouts = {};
+  final _earningsController = StreamController<UserEarnings>.broadcast();
   
   bool _isInitialized = false;
   
   bool get isInitialized => _isInitialized;
+  Stream<UserEarnings> get earningsStream => _earningsController.stream;
   
   Future<void> initialize() async {
     try {
-      // Initialize Web3 for Polygon network (low fees)
-      _web3Client = Web3Client(
-        'https://polygon-rpc.com/',
-        Client(),
+      // Initialize blockchain manager
+      _blockchainManager = BlockchainManager(
+        network: BlockchainNetwork.polygon,  // Use Polygon for low fees
       );
+      await _blockchainManager.initialize();
       
-      // Initialize Lightning Network client
+      // Initialize lightning manager if in production
       if (AppConfig.isProduction) {
-        _lightningClient = LightningNetworkClient(
+        _lightningManager = LightningManager(
           nodeUrl: const String.fromEnvironment('LIGHTNING_NODE_URL'),
           macaroon: const String.fromEnvironment('LIGHTNING_MACAROON'),
         );
+        await _lightningManager.initialize();
       }
+      
+      // Subscribe to payment events
+      _subscribeToEvents();
       
       _isInitialized = true;
       safePrint('✅ Monetization Service initialized successfully');
@@ -47,7 +57,74 @@ class MonetizationService {
     }
   }
   
-  Future<double> recordSpatialContribution(
+  void _subscribeToEvents() {
+    // Subscribe to blockchain events
+    _blockchainManager.events.listen((event) {
+      switch (event.type) {
+        case BlockchainEventType.paymentConfirmed:
+          _handlePaymentConfirmed(
+            event.payment.userId,
+            event.payment.amount,
+            PaymentType.blockchain,
+          );
+          break;
+        default:
+          break;
+      }
+    });
+    
+    // Subscribe to lightning events if in production
+    if (_lightningManager != null) {
+      _lightningManager.events.listen((event) {
+        switch (event.type) {
+          case LightningEventType.invoicePaid:
+            _handlePaymentConfirmed(
+              event.invoice.userId,
+              event.invoice.amount,
+              PaymentType.lightning,
+            );
+            break;
+          default:
+            break;
+        }
+      });
+    }
+  }
+  
+  void _handlePaymentConfirmed(
+    String userId,
+    Decimal amount,
+    PaymentType type,
+  ) {
+    // Update user earnings
+    _userEarnings.update(
+      userId,
+      (earnings) => earnings.copyWith(
+        totalEarnings: earnings.totalEarnings + amount,
+        availableBalance: earnings.availableBalance + amount,
+      ),
+      ifAbsent: () => UserEarnings(
+        userId: userId,
+        totalEarnings: amount,
+        availableBalance: amount,
+        pendingBalance: Decimal.zero,
+        lifetimeWithdrawals: Decimal.zero,
+      ),
+    );
+    
+    final earnings = _userEarnings[userId]!;
+    _earningsController.add(earnings);
+    
+    // Track analytics
+    final analyticsService = getIt<AnalyticsService>();
+    analyticsService.trackEvent('payment_confirmed', {
+      'user_id': userId,
+      'amount': amount.toString(),
+      'payment_type': type.toString(),
+    });
+  }
+  
+  Future<Decimal> recordSpatialContribution(
     String userId,
     SpatialContribution contribution,
   ) async {
@@ -58,21 +135,28 @@ class MonetizationService {
     try {
       // Calculate earnings based on contribution type and quality
       final earnings = _calculateEarnings(contribution);
+      final decimalEarnings = Decimal.parse(earnings.toStringAsFixed(6));
       
-      // Update user earnings tracker
-      _userEarnings.putIfAbsent(userId, () => EarningsTracker(userId));
-      _userEarnings[userId]!.addContribution(contribution, earnings);
+      // Update user earnings
+      final currentEarnings = await getUserEarnings(userId);
+      final updatedEarnings = currentEarnings.copyWith(
+        totalEarnings: currentEarnings.totalEarnings + decimalEarnings,
+        pendingBalance: currentEarnings.pendingBalance + decimalEarnings,
+      );
+      
+      _userEarnings[userId] = updatedEarnings;
+      _earningsController.add(updatedEarnings);
       
       // Store in AWS DynamoDB
       final awsService = getIt<AWSService>();
-      await awsService.updateUserEarnings(userId, earnings);
+      await awsService.updateUserEarnings(userId, decimalEarnings);
       
       // Process instant payment if threshold met
-      _pendingPayouts[userId] = (_pendingPayouts[userId] ?? 0.0) + earnings;
+      _pendingPayouts[userId] = (_pendingPayouts[userId] ?? Decimal.zero) + decimalEarnings;
       
-      if (_pendingPayouts[userId]! >= (AppConfig.minimumPayoutCents / 100)) {
+      if (_pendingPayouts[userId]! >= MIN_WITHDRAWAL) {
         await _processInstantPayout(userId, _pendingPayouts[userId]!);
-        _pendingPayouts[userId] = 0.0;
+        _pendingPayouts[userId] = Decimal.zero;
       }
       
       // Track analytics
@@ -80,11 +164,11 @@ class MonetizationService {
       await analyticsService.trackEvent('earnings_recorded', {
         'user_id': userId,
         'contribution_type': contribution.type,
-        'earnings': earnings,
+        'earnings': decimalEarnings.toString(),
         'quality_score': contribution.qualityScore,
       });
       
-      return earnings;
+      return decimalEarnings;
       
     } catch (e) {
       safePrint('❌ Failed to record spatial contribution: $e');
@@ -104,14 +188,69 @@ class MonetizationService {
       qualityScore: _calculateMeshQuality(participationTime, dataTransferred),
     );
     
-    final earnings = _calculateMeshEarnings(contribution);
-    
     await recordSpatialContribution(userId, contribution);
   }
   
   Future<UserEarnings> getUserEarnings(String userId) async {
+    // Check local cache first
+    final cachedEarnings = _userEarnings[userId];
+    if (cachedEarnings != null) return cachedEarnings;
+    
+    // Fetch from AWS if not in cache
     final awsService = getIt<AWSService>();
-    return await awsService.getUserEarnings(userId);
+    final earnings = await awsService.getUserEarnings(userId);
+    
+    _userEarnings[userId] = earnings;
+    return earnings;
+  }
+  
+  Future<String> createPaymentRequest({
+    required String userId,
+    required Decimal amount,
+    Map<String, dynamic>? metadata,
+  }) async {
+    try {
+      // Choose payment method based on amount
+      if (amount >= BLOCKCHAIN_THRESHOLD) {
+        return await _blockchainManager.createPaymentRequest(
+          userId: userId,
+          amount: amount,
+          metadata: metadata,
+        );
+      } else if (_lightningManager != null) {
+        return await _lightningManager.createInvoice(
+          userId: userId,
+          amount: amount,
+          metadata: metadata,
+        );
+      } else {
+        throw UnsupportedError('No payment method available for amount: \$${amount.toString()}');
+      }
+    } catch (e) {
+      safePrint('❌ Error creating payment request: $e');
+      rethrow;
+    }
+  }
+  
+  Future<PaymentStatus> checkPayment(String paymentId) async {
+    try {
+      // Try blockchain first
+      final blockchainStatus = await _blockchainManager.checkPayment(paymentId);
+      if (blockchainStatus != PaymentStatus.notFound) {
+        return blockchainStatus;
+      }
+      
+      // Try lightning if available
+      if (_lightningManager != null) {
+        return await _lightningManager.checkInvoice(paymentId);
+      }
+      
+      return PaymentStatus.notFound;
+      
+    } catch (e) {
+      safePrint('❌ Error checking payment: $e');
+      rethrow;
+    }
   }
   
   double _calculateEarnings(SpatialContribution contribution) {
@@ -149,17 +288,29 @@ class MonetizationService {
     return 1.2; // Base multiplier
   }
   
-  Future<void> _processInstantPayout(String userId, double amount) async {
+  Future<void> _processInstantPayout(String userId, Decimal amount) async {
     try {
-      // Try Lightning Network first (instant, zero fees)
-      if (_lightningClient != null && AppConfig.isProduction) {
-        await _processLightningPayout(userId, amount);
+      final userPreferences = await _getUserPaymentPreferences(userId);
+      
+      String txId;
+      if (amount >= BLOCKCHAIN_THRESHOLD && userPreferences.blockchainAddress != null) {
+        // Use blockchain for larger amounts
+        txId = await _blockchainManager.withdraw(
+          userId: userId,
+          address: userPreferences.blockchainAddress!,
+          amount: amount,
+        );
+      } else if (_lightningManager != null && userPreferences.lightningAddress != null) {
+        // Use Lightning Network for smaller amounts
+        txId = await _lightningManager.sendPayment(
+          paymentRequest: userPreferences.lightningAddress!,
+        );
       } else {
-        // Fallback to traditional payment processing
-        await _processFallbackPayout(userId, amount);
+        throw UnsupportedError('No payment method available for user: $userId');
       }
       
-      safePrint('💰 Instant payout processed: \$${amount.toStringAsFixed(2)} to $userId');
+      await _recordPayoutSuccess(userId, amount, txId);
+      safePrint('💰 Instant payout processed: \$${amount.toString()} to $userId');
       
     } catch (e) {
       safePrint('❌ Payout processing failed: $e');
@@ -168,53 +319,56 @@ class MonetizationService {
     }
   }
   
-  Future<void> _processLightningPayout(String userId, double amount) async {
-    final satoshis = (amount * 100000000).toInt();
-    
-    final invoice = await _lightningClient!.createInvoice(
-      amount: satoshis,
-      description: 'SpatialMesh AR earnings: \$${amount.toStringAsFixed(2)}',
-      expiry: 3600,
-    );
-    
-    // In production, this would send to user's Lightning wallet
-    // For now, record the successful processing
-    await _recordPayoutSuccess(userId, amount, 'lightning', invoice.paymentHash);
+  Future<UserPaymentPreferences> _getUserPaymentPreferences(String userId) async {
+    final awsService = getIt<AWSService>();
+    return await awsService.getUserPaymentPreferences(userId);
   }
   
-  Future<void> _processFallbackPayout(String userId, double amount) async {
-    // Process via traditional payment method
-    // This would integrate with Stripe, PayPal, or bank transfer
-    await _recordPayoutSuccess(userId, amount, 'traditional', _generateTransactionId());
-  }
-  
-  Future<void> _recordPayoutSuccess(String userId, double amount, String method, String transactionId) async {
+  Future<void> _recordPayoutSuccess(
+    String userId,
+    Decimal amount,
+    String transactionId,
+  ) async {
     final awsService = getIt<AWSService>();
     
-    // Record payout in earnings history
-    // TODO: Call AWS API to record payout
+    // Get current earnings
+    final earnings = await getUserEarnings(userId);
     
+    // Update earnings
+    final updatedEarnings = earnings.copyWith(
+      availableBalance: earnings.availableBalance - amount,
+      lifetimeWithdrawals: earnings.lifetimeWithdrawals + amount,
+    );
+    
+    // Update in AWS and local cache
+    await awsService.updateUserEarnings(userId, -amount);
+    _userEarnings[userId] = updatedEarnings;
+    _earningsController.add(updatedEarnings);
+    
+    // Record payout transaction
+    await awsService.recordPayout(userId, amount, transactionId);
+    
+    // Track analytics
     final analyticsService = getIt<AnalyticsService>();
     await analyticsService.trackEvent('payout_processed', {
       'user_id': userId,
-      'amount': amount,
-      'method': method,
+      'amount': amount.toString(),
       'transaction_id': transactionId,
     });
   }
   
-  void _queueFailedPayout(String userId, double amount) {
+  void _queueFailedPayout(String userId, Decimal amount) {
     // Queue failed payout for retry
-    _pendingPayouts[userId] = (_pendingPayouts[userId] ?? 0.0) + amount;
+    _pendingPayouts[userId] = (_pendingPayouts[userId] ?? Decimal.zero) + amount;
   }
   
-  String _generateTransactionId() {
-    return 'tx_${DateTime.now().millisecondsSinceEpoch}_${(DateTime.now().microsecond % 10000).toString().padLeft(4, '0')}';
-  }
-  
-  String _generateUniqueId() {
-    return DateTime.now().millisecondsSinceEpoch.toString() +
-        (1000 + (DateTime.now().microsecond % 9000)).toString();
+  @override
+  Future<void> dispose() async {
+    await _blockchainManager.dispose();
+    if (_lightningManager != null) {
+      await _lightningManager.dispose();
+    }
+    await _earningsController.close();
   }
 }
 

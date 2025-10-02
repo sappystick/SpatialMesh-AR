@@ -11,6 +11,9 @@ import 'core/app_config.dart';
 import 'core/service_locator.dart';
 import 'core/app_theme.dart';
 import 'screens/splash_screen.dart';
+import 'screens/home_screen.dart';
+import 'screens/auth_screen.dart';
+import 'providers/auth_provider.dart';
 import 'amplifyconfiguration.dart';
 
 void main() async {
@@ -72,7 +75,37 @@ class SpatialMeshApp extends ConsumerWidget {
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.system,
-      home: const SplashScreen(),
+      home: Consumer(
+        builder: (context, ref, _) {
+          final authState = ref.watch(authProvider);
+          
+          switch (authState) {
+            case AuthState.initial:
+              return const SplashScreen();
+            case AuthState.authenticated:
+              return const HomeScreen();
+            case AuthState.unauthenticated:
+              return const AuthScreen();
+            case AuthState.error:
+              return Scaffold(
+                body: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Text('Authentication Error'),
+                      ElevatedButton(
+                        onPressed: () {
+                          ref.read(authProvider.notifier)._initialize();
+                        },
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+          }
+        },
+      ),
       builder: (context, child) {
         return MediaQuery(
           data: MediaQuery.of(context).copyWith(
